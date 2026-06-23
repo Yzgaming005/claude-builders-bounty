@@ -1,0 +1,305 @@
+{
+  "name": "Weekly Dev Summary — Claude API",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 17 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Weekly Cron (Fri 5PM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.owner }}/{{ $json.repo }}/commits",
+        "options": {
+          "qs": {
+            "since": "={{ new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('.')[0] + 'Z' }}",
+            "until": "={{ new Date().toISOString().split('.')[0] + 'Z' }}",
+            "per_page": 100
+          }
+        },
+        "sendQuery": true,
+        "authentication": "genericCredentialType",
+        "genericAuthType": "n8n-nodes-base.httpQueryAuth"
+      },
+      "id": "github-commits",
+      "name": "Get Commits",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [500, 200],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "{{ $credentials.githubApi?.id }}",
+          "name": "GitHub API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.owner }}/{{ $json.repo }}/issues",
+        "options": {
+          "qs": {
+            "state": "closed",
+            "since": "={{ new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('.')[0] + 'Z' }}",
+            "per_page": 100,
+            "filter": "all"
+          }
+        },
+        "sendQuery": true,
+        "authentication": "genericCredentialType",
+        "genericAuthType": "n8n-nodes-base.httpQueryAuth"
+      },
+      "id": "github-issues",
+      "name": "Get Closed Issues",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [500, 400],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "{{ $credentials.githubApi?.id }}",
+          "name": "GitHub API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.owner }}/{{ $json.repo }}/pulls",
+        "options": {
+          "qs": {
+            "state": "closed",
+            "sort": "updated",
+            "direction": "desc",
+            "per_page": 100
+          }
+        },
+        "sendQuery": true,
+        "authentication": "genericCredentialType",
+        "genericAuthType": "n8n-nodes-base.httpQueryAuth"
+      },
+      "id": "github-prs",
+      "name": "Get Merged PRs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [500, 600],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "{{ $credentials.githubApi?.id }}",
+          "name": "GitHub API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const commits = $input.all()[0].json.body ? JSON.parse($input.all()[0].json.body) : ($input.all()[0].json || []);\nconst issues = $input.all()[1].json.body ? JSON.parse($input.all()[1].json.body) : ($input.all()[1].json || []);\nconst prs = $input.all()[2].json.body ? JSON.parse($input.all()[2].json.body) : ($input.all()[2].json || []);\n\nconst mergedPRs = Array.isArray(prs) ? prs.filter(p => p.merged_at !== null) : [];\nconst closedIssues = Array.isArray(issues) ? issues.filter(i => !i.pull_request) : [];\n\nconst formatCommit = c => ({\n  hash: (c.sha || '').substring(0, 7),\n  message: (c.commit?.message || '').split('\\n')[0],\n  author: c.commit?.author?.name || c.author?.login || 'unknown',\n  date: c.commit?.author?.date || ''\n});\n\nconst formatIssue = i => ({\n  number: i.number,\n  title: i.title,\n  author: i.user?.login || 'unknown',\n  closedAt: i.closed_at || ''\n});\n\nconst formatPR = p => ({\n  number: p.number,\n  title: p.title,\n  author: p.user?.login || 'unknown',\n  mergedAt: p.merged_at || '',\n  additions: p.additions || 0,\n  deletions: p.deletions || 0\n});\n\nreturn {\n  owner: $json.owner,\n  repo: $json.repo,\n  weekEnding: new Date().toISOString().split('T')[0],\n  commits: (Array.isArray(commits) ? commits : []).map(formatCommit),\n  closedIssues: closedIssues.map(formatIssue),\n  mergedPRs: mergedPRs.map(formatPR),\n  stats: {\n    totalCommits: (Array.isArray(commits) ? commits : []).length,\n    totalIssuesClosed: closedIssues.length,\n    totalPRsMerged: mergedPRs.length\n  }\n};"
+      },
+      "id": "merge-data",
+      "name": "Merge & Format Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, 400]
+    },
+    {
+      "parameters": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "n8n-nodes-base.httpQueryAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "claude-sonnet-4-20250514"
+            },
+            {
+              "name": "max_tokens",
+              "value": 4096
+            },
+            {
+              "name": "system",
+              "value": "You are an engineering lead writing a weekly dev summary for a GitHub repository. Be concise, insightful, and highlight meaningful patterns. Use a narrative tone — not just a bullet list. Mention top contributors, notable changes, areas of focus, and any trends you observe. Write in {{ $json.language || 'EN' }}."
+            },
+            {
+              "name": "messages",
+              "value": "=[\n  {\n    \"role\": \"user\",\n    \"content\": \"Generate a weekly development summary for the repository **{{ $json.owner }}/{{ $json.repo }}** for the week ending {{ $json.weekEnding }}.\\n\\n## 📊 Stats\\n- Commits: {{ $json.stats.totalCommits }}\\n- Issues closed: {{ $json.stats.totalIssuesClosed }}\\n- PRs merged: {{ $json.stats.totalPRsMerged }}\\n\\n## 📝 Commits\\n{{ $json.commits.map(c => '- `' + c.hash + '` ' + c.message + ' (' + c.author + ')' ).join('\\\\n') }}\\n\\n## ✅ Issues Closed\\n{{ $json.closedIssues.map(i => '- #' + i.number + ': ' + i.title + ' (' + i.author + ')' ).join('\\\\n') }}\\n\\n## 🔀 PRs Merged\\n{{ $json.mergedPRs.map(p => '- #' + p.number + ': ' + p.title + ' (' + p.author + ', +' + p.additions + '/-' + p.deletions + ')' ).join('\\\\n') }}\\n\\nPlease write an engaging narrative summary highlighting key themes, contributors, and observations.\"\n  }\n]"
+            }
+          ]
+        },
+        "options": {
+          "headers": {
+            "anthropic-version": "2023-06-01",
+            "x-api-key": "={{ $credentials.claudeApi?.apiKey }}"
+          }
+        }
+      },
+      "id": "claude-api",
+      "name": "Claude API — Generate Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 400],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "{{ $credentials.claudeApi?.id }}",
+          "name": "Claude API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nlet body = response.body;\nif (typeof body === 'string') {\n  try { body = JSON.parse(body); } catch(e) {}\n}\n\nconst content = body?.content?.[0]?.text || body?.content || JSON.stringify(body);\n\nconst report = `# 📬 Weekly Dev Summary\\n\\n**Repository:** ${$json.owner}/${$json.repo}\\n**Week ending:** ${$json.weekEnding}\\n\\n## 📊 Stats\\n- Commits: ${$json.stats.totalCommits}\\n- Issues closed: ${$json.stats.totalIssuesClosed}\\n- PRs merged: ${$json.stats.totalPRsMerged}\\n\\n## 📝 Generated Summary\\n${content}\\n\\n---\\n*Generated by n8n + Claude API*`;\n\nreturn { summary: report };"
+      },
+      "id": "extract-summary",
+      "name": "Extract Summary Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.webhookUrl }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "content",
+              "value": "={{ $json.summary.substring(0, 2000) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "discord-webhook",
+      "name": "Send to Discord",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This node serves as the workflow start — set your config variables here\n// Modify the values below before activating the workflow\n\nreturn [\n  {\n    owner: 'your-org',\n    repo: 'your-repo',\n    language: 'EN',\n    webhookUrl: 'https://discord.com/api/webhooks/your-webhook-id/your-webhook-token',\n    // Optional: email SMTP config (use n8n Email node instead of Discord)\n    deliveryMethod: 'discord' // 'discord', 'slack', or 'email'\n  }\n];",
+        "mode": "eachOnce"
+      },
+      "id": "config-node",
+      "name": "Config (Set Variables)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 300]
+    }
+  ],
+  "connections": {
+    "Config (Set Variables)": {
+      "main": [
+        [
+          {
+            "node": "Weekly Cron (Fri 5PM)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weekly Cron (Fri 5PM)": {
+      "main": [
+        [
+          {
+            "node": "Get Commits",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Closed Issues",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Merged PRs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Commits": {
+      "main": [
+        [
+          {
+            "node": "Merge & Format Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Closed Issues": {
+      "main": [
+        [
+          {
+            "node": "Merge & Format Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get Merged PRs": {
+      "main": [
+        [
+          {
+            "node": "Merge & Format Data",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge & Format Data": {
+      "main": [
+        [
+          {
+            "node": "Claude API — Generate Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude API — Generate Summary": {
+      "main": [
+        [
+          {
+            "node": "Extract Summary Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Summary Text": {
+      "main": [
+        [
+          {
+            "node": "Send to Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "versionId": "1.0",
+  "active": true,
+  "settings": {
+    "timezone": "UTC"
+  },
+  "tags": ["claude", "github", "weekly-summary", "dev-report"]
+}
