@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""
+Claude Code pre-tool-use hook — blocks destructive bash commands.
+
+Place this file at ~/.claude/hooks/pre-tool-use (make executable).
+Claude Code invokes it before every tool call.
+Exit 0 = allow; exit 1 = block.
+"""
+
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+
+# --- Configuration -----------------------------------------------------------
+
+LOG_FILE = os.path.expanduser("~/.claude/hooks/blocked.log")
+
+# Each entry: (name, pattern, flag, message)
+# pattern is compiled as case-insensitive regex
+# flag (optional regex flag) provides an extra blocking condition
+BLOCK_RULES = [
+    {
+        "name": "rm -rf",
+        "pattern": re.compile(r"\brm\s+(-{1,2}[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-{1,2}[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*)\b"),
+        "message": (
+            "BLOCKED: 'rm -rf' (recursive force remove) is destructive. "
+            "Use 'rm' without -rf, or move files to trash instead."
+        ),
+    },
+    {
+        "name": "DROP TABLE",
+        "pattern": re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
+        "message": (
+            "BLOCKED: 'DROP TABLE' permanently deletes a database table and all its data. "
+            "Use DROP TABLE only with explicit confirmation and a backup first."
+        ),
+    },
+    {
+        "name": "git push --force",
+        "pattern": re.compile(r"\bgit\s+push\s+(?!.*--force-with-lease).*--force\b"),
+        "message": (
+            "BLOCKED: 'git push --force' overwrites remote history and can destroy teammates' work. "
+            "Use 'git push --force-with-lease' instead, which is safer."
+        ),
+    },
+    {
+        "name": "TRUNCATE",
+        "pattern": re.compile(r"\bTRUNCATE\b", re.IGNORECASE),
+        "message": (
+            "BLOCKED: 'TRUNCATE' deletes all rows from a database table. "
+            "Use DELETE with a WHERE clause, or ensure you have a backup."
+        ),
+    },
+    {
+        "name": "DELETE FROM without WHERE",
+        "pattern": re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE),
+        "flag": re.compile(r"\bWHERE\b", re.IGNORECASE),
+        "message": (
+            "BLOCKED: 'DELETE FROM' without a WHERE clause removes ALL rows from the table. "
+            "Add a WHERE clause to scope the deletion, or use a transaction."
+        ),
+    },
+]
+
+
+def get_tool_info():
+    """Extract tool name and input from environment."""
+    tool_name = os.environ.get("CLAUDE_TOOL_NAME", "")
+    tool_input_raw = os.environ.get("CLAUDE_TOOL_INPUT", "{}")
+    project_path = os.environ.get("CLAUDE_PROJECT_PATH", os.getcwd())
+
+    try:
+        tool_input = json.loads(tool_input_raw)
+    except json.JSONDecodeError:
+        tool_input = {}
+
+    return tool_name, tool_input, project_path
+
+
+def extract_command(tool_name, tool_input):
+    """Extract the bash command from tool arguments."""
+    if tool_name.lower() in ("bash", "terminal", "execute_command"):
+        # Common Claude Code tool input shapes:
+        # {"command": "..."} or {"code": "..."}
+        return (
+            tool_input.get("command")
+            or tool_input.get("code")
+            or tool_input.get("cmd")
+            or ""
+        )
+    return ""
+
+
+def get_project_path(project_path, tool_input):
+    """Determine the working directory for the command."""
+    # Some tools pass a cwd/workdir
+    cwd = tool_input.get("cwd") or tool_input.get("workdir") or tool_input.get("working_dir")
+    if cwd:
+        return cwd
+    return project_path
+
+
+def check_command(command):
+    """Check a command against all block rules. Return match info or None."""
+    command_stripped = command.strip()
+
+    for rule in BLOCK_RULES:
+        match = rule["pattern"].search(command_stripped)
+        if match:
+            # If rule has a 'flag' (extra condition), check it
+            if "flag" in rule:
+                # For "DELETE FROM without WHERE": block only if WHERE is absent
+                if rule["flag"].search(command_stripped):
+                    continue  # Has WHERE clause, allow it
+
+            return rule
+
+    return None
+
+
+def log_block(rule, command, project_path):
+    """Append a blocked attempt to the log file."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    log_dir = os.path.dirname(LOG_FILE)
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_entry = (
+        f"[{timestamp}] BLOCKED: {rule['name']}\n"
+        f"  Command: {command}\n"
+        f"  Project: {project_path}\n"
+        f"  Reason:  {rule['message']}\n"
+        f"{'-' * 72}\n"
+    )
+
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(log_entry)
+    except OSError:
+        # If we can't write to the log, still block the command
+        pass
+
+
+def main():
+    tool_name, tool_input, project_path = get_tool_info()
+    command = extract_command(tool_name, tool_input)
+    resolved_path = get_project_path(project_path, tool_input)
+
+    # Only check bash/terminal tools
+    if not command:
+        sys.exit(0)
+
+    result = check_command(command)
+    if result is None:
+        sys.exit(0)  # No rules matched — allow
+
+    # Block and log
+    log_block(result, command, resolved_path)
+
+    # Print clear message to stderr for Claude
+    print(f"\n🚫 {result['message']}", file=sys.stderr)
+    print(f"   Command was: {command}", file=sys.stderr)
+    print(f"   Logged to:   {LOG_FILE}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
