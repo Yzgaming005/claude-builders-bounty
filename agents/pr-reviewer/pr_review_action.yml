@@ -1,0 +1,69 @@
+name: "Claude Code PR Reviewer"
+
+# Posts a structured Claude Code PR review as a sticky comment whenever a
+# PR is opened, synchronized, or reopened. Uses the agent bundled in
+# ./agents/pr-reviewer/ to fetch the diff via `gh` and run a structured
+# review. If the `claude` CLI is available in the runner (e.g. a self-hosted
+# runner with Claude Code installed) it will be used; otherwise the action
+# falls back to the bundled heuristic reviewer.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_url:
+        description: "GitHub PR URL (alternative to event-based trigger)"
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Review PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve PR URL
+        id: pr
+        run: |
+          if [[ -n "${{ inputs.pr_url }}" ]]; then
+            echo "url=${{ inputs.pr_url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=${{ github.event.pull_request.html_url }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run claude-review
+        id: review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CLAUDE_BIN: override path to claude CLI on the runner
+          # CLAUDE_TIMEOUT: timeout in seconds for the claude CLI call
+        run: |
+          set -euo pipefail
+          python3 agents/pr-reviewer/claude_review.py \
+            --pr "${{ steps.pr.outputs.url }}" \
+            --no-claude \
+            > /tmp/review.md
+          echo "review_size=$(wc -c </tmp/review.md)" >> "$GITHUB_OUTPUT"
+
+      - name: Preview review
+        run: cat /tmp/review.md
+
+      - name: Post review as PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: claude-review
+          path: /tmp/review.md
