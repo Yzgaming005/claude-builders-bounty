@@ -1,0 +1,6 @@
+# claude-review has no Python dependencies — stdlib only.
+# All LLM calls go over HTTPS via urllib; gh CLI handles GitHub auth.
+#
+# If you want colourised output or pretty YAML later, add:
+#   pyyaml
+#   rich
