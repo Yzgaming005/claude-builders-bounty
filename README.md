@@ -17,10 +17,11 @@ Blocked attempts are logged to `~/.claude/hooks/blocked.log`.
 
 | Category | Patterns |
 |----------|----------|
-| Filesystem | `rm -rf`, `chmod -R 777`, `mv ... /dev/null`, `dd` to disk |
+| Filesystem | `rm -rf`, `chmod -R 777`, `mv ... /dev/null`, `dd` to disk, `mkfs`, `truncate /etc/passwd` |
 | Database | `DROP TABLE/DATABASE`, `TRUNCATE`, `DELETE FROM` (no WHERE) |
 | Git | `git push --force`, `git reset --hard`, `git clean -fd`, `git branch -D` |
-| System | Fork bombs, `sudo rm -rf`, `curl | bash`, `netcat` listeners |
+| System | Fork bombs, `sudo rm -rf`, `while true`, `curl | bash`, `netcat` |
+| Low-level devices | Formatting tools (`mkfs`), raw writes to `/dev/sd*` |
 
 ## Installation (2 commands)
 
@@ -29,9 +30,8 @@ Blocked attempts are logged to `~/.claude/hooks/blocked.log`.
 cp hooks/pre_tool_use.py ~/.claude/hooks/pre_tool_use.py
 chmod +x ~/.claude/hooks/pre_tool_use.py
 
-# 2. Merge settings into your Claude Code config
-# Add the hooks section from settings.json to your ~/.claude/settings.json
-# or project-level .claude/settings.json
+# 2. Merge the hooks section from settings.json into your
+# ~/.claude/settings.json or project-level .claude/settings.json
 ```
 
 ## Log format
@@ -51,3 +51,11 @@ echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | python3 hooks/
 # Should be ALLOWED (exit code 0):
 echo '{"tool_name":"Bash","tool_input":{"command":"ls -la"}}' | python3 hooks/pre_tool_use.py; echo "exit: $?"
 ```
+
+Run the automated suite:
+
+```bash
+python3 test_hook.py
+```
+
+Expected: `23/23 passed`
